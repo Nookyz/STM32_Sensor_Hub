@@ -1,0 +1,45 @@
+# Build output (CubeIDE managed build)
+Debug/
+Release/
+build/
+out/
+
+# Compiler and linker artifacts
+*.o
+*.d
+*.su
+*.cyclo
+*.elf
+*.bin
+*.hex
+*.map
+*.list
+*.lst
+*.a
+objects.list
+objects.mk
+sources.mk
+
+# CubeIDE workspace and local settings
+.settings/
+.metadata/
+*.launch
+.mxproject
+
+# VS Code: keep shared config, ignore local state
+.vscode/*
+!.vscode/c_cpp_properties.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/settings.json
+
+# Python (for future log analysis scripts)
+__pycache__/
+*.pyc
+.venv/
+
+# OS and editor junk
+.DS_Store
+Thumbs.db
+*.swp
+*~

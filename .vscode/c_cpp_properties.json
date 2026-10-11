@@ -9,6 +9,7 @@
         "${workspaceFolder}/App/Inc",
         "${workspaceFolder}/BSP/Inc",
         "${workspaceFolder}/Common/Inc",
+        "${workspaceFolder}/Services/Inc",
         "${workspaceFolder}/Drivers/STM32F4xx_HAL_Driver/Inc",
         "${workspaceFolder}/Drivers/STM32F4xx_HAL_Driver/Inc/Legacy",
         "${workspaceFolder}/Drivers/CMSIS/Device/ST/STM32F4xx/Include",

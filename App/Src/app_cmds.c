@@ -3,6 +3,7 @@
 #include "shell.h"
 #include "uart_port.h"
 #include "i2c_port.h"
+#include "sensor_service.h"
 
 #include <stddef.h>
 #include <string.h>
@@ -107,12 +108,42 @@ static status_t cmd_i2c(int argc, char *argv[])
   return STATUS_OK;
 }
 
+static status_t cmd_sensor(int argc, char *argv[])
+{
+  if ((argc != 2) || (strcmp(argv[1], "read") != 0))
+  {
+    return STATUS_ERR_PARAM;
+  }
+
+  sensor_data_t d;
+  sensor_service_get(&d);
+
+  if (!d.aht_ok)
+  {
+    shell_printf("aht20  : no data (errors=%lu)\r\n", (unsigned long)d.aht_errors);
+    return STATUS_OK;
+  }
+
+  /* Fixed-point to text; the sign is handled separately so -0.50 prints right */
+  const int32_t t = d.aht_temp_c100;
+  const uint32_t t_abs = (uint32_t)((t < 0) ? -t : t);
+
+  shell_printf("aht20  : %s%lu.%02lu C, %lu.%02lu %%RH (%lu ms ago)\r\n",
+               (t < 0) ? "-" : "",
+               (unsigned long)(t_abs / 100u), (unsigned long)(t_abs % 100u),
+               (unsigned long)(d.aht_hum_c100 / 100u),
+               (unsigned long)(d.aht_hum_c100 % 100u),
+               (unsigned long)(HAL_GetTick() - d.aht_stamp_ms));
+  return STATUS_OK;
+}
+
 /* const: the table stays in Flash. It must come after all handlers.
  * To add a command: write a handler above and add one row here. */
 static const ShellCmd s_cmds[] = {
-    {"status", "status", cmd_status},
-    {"led", "led on|off|toggle", cmd_led},
-    {"i2c", "i2c scan", cmd_i2c},
+    {"status", "status", "show uptime and error counters", cmd_status},
+    {"led", "led on|off|toggle", "control the LED", cmd_led},
+    {"i2c", "i2c scan", "list devices on the I2C bus", cmd_i2c},
+    {"sensor", "sensor read", "print the latest sensor data", cmd_sensor},
 };
 
 status_t app_cmds_init(const Led *led)

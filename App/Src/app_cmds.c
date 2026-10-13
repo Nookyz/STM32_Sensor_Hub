@@ -108,6 +108,16 @@ static status_t cmd_i2c(int argc, char *argv[])
   return STATUS_OK;
 }
 
+/* Split a value in 0.01 units into sign, whole and fractional parts,
+ * so that values like -0.50 print correctly */
+static void split_c100(int32_t v, const char **sign, uint32_t *whole, uint32_t *frac)
+{
+  const uint32_t a = (uint32_t)((v < 0) ? -v : v);
+  *sign = (v < 0) ? "-" : "";
+  *whole = a / 100u;
+  *frac = a % 100u;
+}
+
 static status_t cmd_sensor(int argc, char *argv[])
 {
   if ((argc != 2) || (strcmp(argv[1], "read") != 0))
@@ -118,22 +128,37 @@ static status_t cmd_sensor(int argc, char *argv[])
   sensor_data_t d;
   sensor_service_get(&d);
 
-  if (!d.aht_ok)
+  const uint32_t now = HAL_GetTick();
+  const char *sg;
+  uint32_t w, f;
+
+  if (d.aht_ok)
+  {
+    split_c100(d.aht_temp_c100, &sg, &w, &f);
+    shell_printf("aht20  : %s%lu.%02lu C, %lu.%02lu %%RH (%lu ms ago)\r\n",
+                 sg, (unsigned long)w, (unsigned long)f,
+                 (unsigned long)(d.aht_hum_c100 / 100u),
+                 (unsigned long)(d.aht_hum_c100 % 100u),
+                 (unsigned long)(now - d.aht_stamp_ms));
+  }
+  else
   {
     shell_printf("aht20  : no data (errors=%lu)\r\n", (unsigned long)d.aht_errors);
-    return STATUS_OK;
   }
 
-  /* Fixed-point to text; the sign is handled separately so -0.50 prints right */
-  const int32_t t = d.aht_temp_c100;
-  const uint32_t t_abs = (uint32_t)((t < 0) ? -t : t);
-
-  shell_printf("aht20  : %s%lu.%02lu C, %lu.%02lu %%RH (%lu ms ago)\r\n",
-               (t < 0) ? "-" : "",
-               (unsigned long)(t_abs / 100u), (unsigned long)(t_abs % 100u),
-               (unsigned long)(d.aht_hum_c100 / 100u),
-               (unsigned long)(d.aht_hum_c100 % 100u),
-               (unsigned long)(HAL_GetTick() - d.aht_stamp_ms));
+  if (d.bmp_ok)
+  {
+    split_c100(d.bmp_temp_c100, &sg, &w, &f);
+    shell_printf("bmp280 : %s%lu.%02lu C, %lu.%02lu hPa (%lu ms ago)\r\n",
+                 sg, (unsigned long)w, (unsigned long)f,
+                 (unsigned long)(d.bmp_press_pa / 100u),
+                 (unsigned long)(d.bmp_press_pa % 100u),
+                 (unsigned long)(now - d.bmp_stamp_ms));
+  }
+  else
+  {
+    shell_printf("bmp280 : no data (errors=%lu)\r\n", (unsigned long)d.bmp_errors);
+  }
   return STATUS_OK;
 }
 

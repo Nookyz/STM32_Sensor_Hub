@@ -8,8 +8,9 @@ typedef enum
   STATUS_ERR_TIMEOUT,
   STATUS_ERR_BUS, /* Bus error or arbitration lost */
   STATUS_ERR_BUSY,
-  STATUS_ERR_ID,  /* Unexpected device ID */
-  STATUS_ERR_NACK /* Device did not acknowledge */
+  STATUS_ERR_ID,   /* Unexpected device ID */
+  STATUS_ERR_NACK, /* Device did not acknowledge */
+  STATUS_ERR_CRC
 } status_t;
 
 #endif /* STATUS_H */

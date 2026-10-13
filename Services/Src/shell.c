@@ -44,10 +44,11 @@ static void prompt(void)
 
 static void print_help(void)
 {
-  out("Commands:\r\n  help\r\n");
+  out("Commands:\r\n");
+  out("  help                 show this list\r\n");
   for (size_t i = 0u; i < s_count; i++)
   {
-    shell_printf("  %s\r\n", s_cmds[i].usage);
+    shell_printf("  %-20s %s\r\n", s_cmds[i].usage, s_cmds[i].desc);
   }
 }
 

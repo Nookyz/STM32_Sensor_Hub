@@ -14,6 +14,7 @@ typedef struct
 {
   const char *name;  /* Lowercase command name */
   const char *usage; /* Short usage, e.g. "led on|off|toggle" */
+  const char *desc;  /* One-line description for help */
   ShellHandler handler;
 } ShellCmd;
 

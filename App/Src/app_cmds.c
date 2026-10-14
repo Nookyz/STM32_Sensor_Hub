@@ -4,6 +4,8 @@
 #include "uart_port.h"
 #include "i2c_port.h"
 #include "sensor_service.h"
+#include "spi_port.h"
+#include "w25q128.h"
 
 #include <stddef.h>
 #include <string.h>
@@ -57,6 +59,9 @@ static status_t cmd_status(int argc, char *argv[])
                (unsigned long)is.errors,
                (unsigned long)is.nacks,
                (unsigned long)is.recoveries);
+  spi_stats_t ss;
+  spi_port_get_stats(&ss);
+  shell_printf("spi    : errors=%lu\r\n", (unsigned long)ss.errors);
   return STATUS_OK;
 }
 
@@ -79,6 +84,49 @@ static status_t cmd_led(int argc, char *argv[])
     return led_toggle(s_led);
   }
   return STATUS_ERR_PARAM;
+}
+
+static status_t cmd_flash(int argc, char *argv[])
+{
+  if ((argc != 2) || (strcmp(argv[1], "info") != 0))
+  {
+    return STATUS_ERR_PARAM;
+  }
+
+  /* Re-detect every time, so a flash wired after boot is picked up */
+  w25q_info_t info;
+  const status_t st = w25q_init(&info);
+
+  if ((st != STATUS_OK) && (st != STATUS_ERR_ID))
+  {
+    return st; /* SPI failure, nothing to print */
+  }
+
+  shell_printf("JEDEC ID : %02X %02X %02X\r\n",
+               (unsigned)info.manufacturer, (unsigned)info.mem_type,
+               (unsigned)info.capacity_code);
+
+  if (st == STATUS_OK)
+  {
+    shell_printf("vendor   : Winbond\r\n");
+    shell_printf("capacity : %lu KB\r\n", (unsigned long)(info.capacity_bytes / 1024u));
+    return STATUS_OK;
+  }
+
+  /* Hints for the two most common wiring faults */
+  if ((info.manufacturer == 0xFFu) && (info.mem_type == 0xFFu))
+  {
+    shell_printf("no answer: MISO floats high. Check VCC, CS and MISO wiring\r\n");
+  }
+  else if ((info.manufacturer == 0x00u) && (info.mem_type == 0x00u))
+  {
+    shell_printf("no answer: MISO stuck low. Check power and MISO/MOSI swap\r\n");
+  }
+  else
+  {
+    shell_printf("unknown chip, expected Winbond (EF)\r\n");
+  }
+  return st;
 }
 
 static status_t cmd_i2c(int argc, char *argv[])
@@ -169,6 +217,7 @@ static const ShellCmd s_cmds[] = {
     {"led", "led on|off|toggle", "control the LED", cmd_led},
     {"i2c", "i2c scan", "list devices on the I2C bus", cmd_i2c},
     {"sensor", "sensor read", "print the latest sensor data", cmd_sensor},
+    {"flash", "flash info", "show flash JEDEC ID and size", cmd_flash},
 };
 
 status_t app_cmds_init(const Led *led)

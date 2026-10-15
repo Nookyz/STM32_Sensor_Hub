@@ -1,14 +1,19 @@
-#include <stdbool.h>
 #include "w25q128.h"
 #include "spi_port.h"
 #include "main.h"
 
+#include <stdbool.h>
+
 #define CMD_RELEASE_PD 0xABu /* Wake from deep power-down, harmless otherwise */
 #define CMD_JEDEC_ID 0x9Fu
+#define CMD_READ_STATUS1 0x05u
+#define CMD_READ_DATA 0x03u /* 24-bit address, any length, up to ~50 MHz */
+
+#define SR1_BUSY 0x01u
 
 #define WINBOND_ID 0xEFu
 #define CAP_CODE_MIN 0x11u /* 128 KB */
-#define CAP_CODE_MAX 0x1Au /* 64 MB */
+#define CAP_CODE_MAX 0x18u /* 16 MB: the limit of 3-byte addressing */
 
 #define POWERUP_MS 10u /* tVSL: Vcc stable to first command */
 
@@ -87,4 +92,76 @@ status_t w25q_init(w25q_info_t *info)
 uint32_t w25q_capacity(void)
 {
   return s_capacity;
+}
+
+status_t w25q_read_status(uint8_t *sr1)
+{
+  if (sr1 == NULL)
+  {
+    return STATUS_ERR_PARAM;
+  }
+  const uint8_t cmd = CMD_READ_STATUS1;
+  return transaction(&cmd, 1u, sr1, 1u);
+}
+
+status_t w25q_wait_ready(uint32_t timeout_ms)
+{
+  const uint32_t t0 = HAL_GetTick();
+
+  for (;;)
+  {
+    uint8_t sr;
+    status_t st = w25q_read_status(&sr);
+    if (st != STATUS_OK)
+    {
+      return st;
+    }
+    if ((sr & SR1_BUSY) == 0u)
+    {
+      return STATUS_OK;
+    }
+    /* An absent chip floats MISO high (0xFF), which also lands here */
+    if ((HAL_GetTick() - t0) >= timeout_ms)
+    {
+      return STATUS_ERR_TIMEOUT;
+    }
+  }
+}
+
+status_t w25q_read(uint32_t addr, uint8_t *buf, uint16_t len)
+{
+  if ((buf == NULL) || (len == 0u))
+  {
+    return STATUS_ERR_PARAM;
+  }
+  if (s_capacity == 0u)
+  {
+    return STATUS_ERR_ID;
+  }
+  /* Written as a subtraction so that addr + len can never overflow */
+  if ((addr >= s_capacity) || ((uint32_t)len > (s_capacity - addr)))
+  {
+    return STATUS_ERR_PARAM;
+  }
+
+  /* While an erase or program runs, the chip ignores read commands and
+   * the data would be garbage, so refuse instead of returning it */
+  uint8_t sr;
+  status_t st = w25q_read_status(&sr);
+  if (st != STATUS_OK)
+  {
+    return st;
+  }
+  if ((sr & SR1_BUSY) != 0u)
+  {
+    return STATUS_ERR_BUSY;
+  }
+
+  const uint8_t cmd[4] = {
+      CMD_READ_DATA,
+      (uint8_t)(addr >> 16),
+      (uint8_t)(addr >> 8),
+      (uint8_t)addr,
+  };
+  return transaction(cmd, sizeof(cmd), buf, len);
 }

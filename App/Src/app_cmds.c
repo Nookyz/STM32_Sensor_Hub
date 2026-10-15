@@ -10,8 +10,14 @@
 #include <stddef.h>
 #include <string.h>
 
+#define FLASH_READ_MAX 256u /* Bytes per 'flash read', keeps output short */
+
 /* Objects the commands operate on, set once in app_cmds_init() */
 static const Led *s_led;
+
+/* Static, not on the stack: the CubeMX default stack is only 1 KB and
+ * vsnprintf below already needs a good part of it */
+static uint8_t s_rd_buf[FLASH_READ_MAX];
 
 /* Known sensor addresses, to label scan results */
 typedef struct
@@ -84,49 +90,6 @@ static status_t cmd_led(int argc, char *argv[])
     return led_toggle(s_led);
   }
   return STATUS_ERR_PARAM;
-}
-
-static status_t cmd_flash(int argc, char *argv[])
-{
-  if ((argc != 2) || (strcmp(argv[1], "info") != 0))
-  {
-    return STATUS_ERR_PARAM;
-  }
-
-  /* Re-detect every time, so a flash wired after boot is picked up */
-  w25q_info_t info;
-  const status_t st = w25q_init(&info);
-
-  if ((st != STATUS_OK) && (st != STATUS_ERR_ID))
-  {
-    return st; /* SPI failure, nothing to print */
-  }
-
-  shell_printf("JEDEC ID : %02X %02X %02X\r\n",
-               (unsigned)info.manufacturer, (unsigned)info.mem_type,
-               (unsigned)info.capacity_code);
-
-  if (st == STATUS_OK)
-  {
-    shell_printf("vendor   : Winbond\r\n");
-    shell_printf("capacity : %lu KB\r\n", (unsigned long)(info.capacity_bytes / 1024u));
-    return STATUS_OK;
-  }
-
-  /* Hints for the two most common wiring faults */
-  if ((info.manufacturer == 0xFFu) && (info.mem_type == 0xFFu))
-  {
-    shell_printf("no answer: MISO floats high. Check VCC, CS and MISO wiring\r\n");
-  }
-  else if ((info.manufacturer == 0x00u) && (info.mem_type == 0x00u))
-  {
-    shell_printf("no answer: MISO stuck low. Check power and MISO/MOSI swap\r\n");
-  }
-  else
-  {
-    shell_printf("unknown chip, expected Winbond (EF)\r\n");
-  }
-  return st;
 }
 
 static status_t cmd_i2c(int argc, char *argv[])
@@ -210,6 +173,195 @@ static status_t cmd_sensor(int argc, char *argv[])
   return STATUS_OK;
 }
 
+/* Parse "123" or "0x7B". Rejects empty strings, junk and 32-bit overflow. */
+static bool parse_u32(const char *s, uint32_t *out)
+{
+  uint32_t base = 10u;
+  uint32_t v = 0u;
+
+  if ((s[0] == '0') && ((s[1] == 'x') || (s[1] == 'X')))
+  {
+    base = 16u;
+    s += 2;
+  }
+  if (*s == '\0')
+  {
+    return false;
+  }
+
+  for (; *s != '\0'; s++)
+  {
+    uint32_t d;
+    if ((*s >= '0') && (*s <= '9'))
+    {
+      d = (uint32_t)(*s - '0');
+    }
+    else if ((base == 16u) && (*s >= 'a') && (*s <= 'f'))
+    {
+      d = (uint32_t)(*s - 'a') + 10u;
+    }
+    else if ((base == 16u) && (*s >= 'A') && (*s <= 'F'))
+    {
+      d = (uint32_t)(*s - 'A') + 10u;
+    }
+    else
+    {
+      return false;
+    }
+    if (v > (UINT32_MAX - d) / base)
+    {
+      return false; /* v * base + d would overflow */
+    }
+    v = v * base + d;
+  }
+  *out = v;
+  return true;
+}
+
+/* "00F000: 12 34 ...  |ascii|" for up to 16 bytes. Built by hand into one
+ * string: one UART write per line instead of one per byte. */
+static void dump_line(uint32_t addr, const uint8_t *p, uint8_t n)
+{
+  static const char hexd[] = "0123456789ABCDEF";
+  char line[80];
+  char *o = line;
+
+  for (int s = 20; s >= 0; s -= 4)
+  { /* 24-bit address */
+    *o++ = hexd[(addr >> s) & 0xFu];
+  }
+  *o++ = ':';
+
+  for (uint8_t i = 0u; i < 16u; i++)
+  {
+    *o++ = ' ';
+    if (i < n)
+    {
+      *o++ = hexd[p[i] >> 4];
+      *o++ = hexd[p[i] & 0x0Fu];
+    }
+    else
+    {
+      *o++ = ' '; /* Pad the last short line */
+      *o++ = ' ';
+    }
+  }
+
+  *o++ = ' ';
+  *o++ = ' ';
+  for (uint8_t i = 0u; i < n; i++)
+  {
+    *o++ = ((p[i] >= 0x20u) && (p[i] <= 0x7Eu)) ? (char)p[i] : '.';
+  }
+  *o++ = '\r';
+  *o++ = '\n';
+  *o = '\0';
+
+  shell_printf("%s", line);
+}
+
+static status_t flash_info(void)
+{
+  /* Re-detect every time, so a flash wired after boot is picked up */
+  w25q_info_t info;
+  const status_t st = w25q_init(&info);
+
+  if ((st != STATUS_OK) && (st != STATUS_ERR_ID))
+  {
+    return st; /* SPI failure, nothing to print */
+  }
+
+  shell_printf("JEDEC ID : %02X %02X %02X\r\n",
+               (unsigned)info.manufacturer, (unsigned)info.mem_type,
+               (unsigned)info.capacity_code);
+
+  if (st == STATUS_OK)
+  {
+    shell_printf("vendor   : Winbond\r\n");
+    shell_printf("capacity : %lu KB\r\n", (unsigned long)(info.capacity_bytes / 1024u));
+
+    uint8_t sr;
+    if (w25q_read_status(&sr) == STATUS_OK)
+    {
+      shell_printf("status   : 0x%02X (%s)\r\n", (unsigned)sr,
+                   ((sr & 0x01u) != 0u) ? "busy" : "ready");
+    }
+    return STATUS_OK;
+  }
+
+  /* Hints for the two most common wiring faults */
+  if ((info.manufacturer == 0xFFu) && (info.mem_type == 0xFFu))
+  {
+    shell_printf("no answer: MISO floats high. Check VCC, CS and MISO wiring\r\n");
+  }
+  else if ((info.manufacturer == 0x00u) && (info.mem_type == 0x00u))
+  {
+    shell_printf("no answer: MISO stuck low. Check power and MISO/MOSI swap\r\n");
+  }
+  else
+  {
+    shell_printf("unknown chip, expected Winbond (EF)\r\n");
+  }
+  return st;
+}
+
+static status_t flash_read(int argc, char *argv[])
+{
+  uint32_t addr;
+  uint32_t len;
+
+  if ((argc != 4) || !parse_u32(argv[2], &addr) || !parse_u32(argv[3], &len))
+  {
+    return STATUS_ERR_PARAM;
+  }
+  if ((len == 0u) || (len > FLASH_READ_MAX))
+  {
+    shell_printf("length must be 1..%u\r\n", (unsigned)FLASH_READ_MAX);
+    return STATUS_ERR_PARAM;
+  }
+  if (w25q_capacity() == 0u)
+  {
+    shell_printf("flash not detected, run 'flash info'\r\n");
+    return STATUS_ERR_ID;
+  }
+
+  status_t st = w25q_read(addr, s_rd_buf, (uint16_t)len);
+  if (st == STATUS_ERR_PARAM)
+  {
+    shell_printf("out of range: flash size is %lu bytes\r\n",
+                 (unsigned long)w25q_capacity());
+    return st;
+  }
+  if (st != STATUS_OK)
+  {
+    return st;
+  }
+
+  for (uint32_t off = 0u; off < len; off += 16u)
+  {
+    const uint32_t left = len - off;
+    dump_line(addr + off, &s_rd_buf[off], (uint8_t)((left < 16u) ? left : 16u));
+  }
+  return STATUS_OK;
+}
+
+static status_t cmd_flash(int argc, char *argv[])
+{
+  if (argc < 2)
+  {
+    return STATUS_ERR_PARAM;
+  }
+  if (strcmp(argv[1], "info") == 0)
+  {
+    return (argc == 2) ? flash_info() : STATUS_ERR_PARAM;
+  }
+  if (strcmp(argv[1], "read") == 0)
+  {
+    return flash_read(argc, argv);
+  }
+  return STATUS_ERR_PARAM;
+}
+
 /* const: the table stays in Flash. It must come after all handlers.
  * To add a command: write a handler above and add one row here. */
 static const ShellCmd s_cmds[] = {
@@ -217,7 +369,7 @@ static const ShellCmd s_cmds[] = {
     {"led", "led on|off|toggle", "control the LED", cmd_led},
     {"i2c", "i2c scan", "list devices on the I2C bus", cmd_i2c},
     {"sensor", "sensor read", "print the latest sensor data", cmd_sensor},
-    {"flash", "flash info", "show flash JEDEC ID and size", cmd_flash},
+    {"flash", "flash info|read <addr> <len>", "flash ID and hex dump", cmd_flash},
 };
 
 status_t app_cmds_init(const Led *led)

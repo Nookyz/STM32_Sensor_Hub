@@ -1,0 +1,16 @@
+Backup of W25Q128 sector 0 (0x000000-0x000FFF), taken before the flash
+erase/write commands were added. Only the first 20 bytes are not 0xFF
+(checked for the first 256 bytes).
+
+Looks like the Data Logger calibration (magic 0xCA11B001, 20 bytes).
+This is my reading of the bytes, not a verified decode.
+
+Dump (from 'flash read 0 32'):
+000000: 01 B0 11 CA EB F6 FF FF 9F F6 FF FF 5F 77 FE FF
+000010: 01 00 8C F7
+
+Restore (the shell accepts at most 16 bytes per write):
+flash erase 0 confirm
+flash write 0x0 01B011CAEBF6FFFF9FF6FFFF5F77FEFF confirm
+flash write 0x10 01008CF7 confirm
+flash read 0 32

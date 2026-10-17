@@ -7,9 +7,14 @@
 #include "spi_port.h"
 #include "w25q128.h"
 #include "flash_selftest.h"
-
+#include "data_log.h"
+#include <stdio.h>
 #include <stddef.h>
 #include <string.h>
+
+/* ---- Sensor log ---- */
+#define LOG_DUMP_DEFAULT 5u
+#define LOG_DUMP_MAX 20u
 
 #define FLASH_READ_MAX 256u /* Bytes per 'flash read', keeps output short */
 #define FLASH_WRITE_MAX 16u /* Bytes per 'flash write': the shell line is only 63 chars */
@@ -764,6 +769,210 @@ static status_t cmd_flash(int argc, char *argv[])
   return STATUS_ERR_PARAM;
 }
 
+static void print_log_record(const log_record_t *r)
+{
+  char a[24];
+  char b[28];
+  const char *sg;
+  uint32_t w, f;
+
+  if (r->aht_ok)
+  {
+    split_c100(r->aht_temp_c100, &sg, &w, &f);
+    snprintf(a, sizeof(a), "%s%lu.%02lu C %lu.%02lu%%", sg,
+             (unsigned long)w, (unsigned long)f,
+             (unsigned long)(r->aht_hum_c100 / 100u),
+             (unsigned long)(r->aht_hum_c100 % 100u));
+  }
+  else
+  {
+    strcpy(a, "--");
+  }
+
+  if (r->bmp_ok)
+  {
+    split_c100(r->bmp_temp_c100, &sg, &w, &f);
+    snprintf(b, sizeof(b), "%s%lu.%02lu C %lu.%02lu hPa", sg,
+             (unsigned long)w, (unsigned long)f,
+             (unsigned long)(r->bmp_press_pa / 100u),
+             (unsigned long)(r->bmp_press_pa % 100u));
+  }
+  else
+  {
+    strcpy(b, "--");
+  }
+
+  shell_printf("#%lu %lu ms | A: %s | B: %s\r\n",
+               (unsigned long)r->seq, (unsigned long)r->stamp_ms, a, b);
+}
+
+static status_t log_save(void)
+{
+  sensor_data_t d;
+  sensor_service_get(&d);
+
+  if (!d.aht_ok && !d.bmp_ok)
+  {
+    shell_printf("no sensor data yet, check 'sensor read'\r\n");
+    return STATUS_OK;
+  }
+
+  uint32_t idx;
+  const status_t st = data_log_append(&d, HAL_GetTick(), &idx);
+  if (st == STATUS_ERR_FULL)
+  {
+    shell_printf("log is full (%u records), 'log clear confirm' erases it\r\n",
+                 (unsigned)DATA_LOG_MAX_RECORDS);
+  }
+  else if (st == STATUS_OK)
+  {
+    shell_printf("saved record #%lu (aht20 %s, bmp280 %s)\r\n", (unsigned long)idx,
+                 d.aht_ok ? "ok" : "no data", d.bmp_ok ? "ok" : "no data");
+  }
+  return st;
+}
+
+static status_t log_status(void)
+{
+  uint32_t count;
+  const status_t st = data_log_count(&count);
+  if (st != STATUS_OK)
+  {
+    return st;
+  }
+
+  shell_printf("records : %lu / %u\r\n", (unsigned long)count, (unsigned)DATA_LOG_MAX_RECORDS);
+  shell_printf("area    : 0x%06lX - 0x%06lX, %u bytes per record\r\n",
+               (unsigned long)DATA_LOG_START_ADDR,
+               (unsigned long)(DATA_LOG_START_ADDR + (DATA_LOG_SECTORS * W25Q_SECTOR_SIZE) - 1u),
+               (unsigned)DATA_LOG_RECORD_SIZE);
+  return STATUS_OK;
+}
+
+/* log dump [n]: the last n records, oldest first */
+static status_t log_dump(int argc, char *argv[])
+{
+  uint32_t n = LOG_DUMP_DEFAULT;
+
+  if (argc == 3)
+  {
+    if (!parse_u32(argv[2], &n) || (n == 0u) || (n > LOG_DUMP_MAX))
+    {
+      shell_printf("n must be 1..%u\r\n", (unsigned)LOG_DUMP_MAX);
+      return STATUS_ERR_PARAM;
+    }
+  }
+  else if (argc != 2)
+  {
+    return STATUS_ERR_PARAM;
+  }
+
+  uint32_t count;
+  status_t st = data_log_count(&count);
+  if (st != STATUS_OK)
+  {
+    return st;
+  }
+  if (count == 0u)
+  {
+    shell_printf("log is empty\r\n");
+    return STATUS_OK;
+  }
+
+  for (uint32_t i = (count > n) ? (count - n) : 0u; i < count; i++)
+  {
+    log_record_t r;
+    st = data_log_read(i, &r);
+    if (st == STATUS_ERR_CRC)
+    {
+      shell_printf("#%lu bad record (CRC)\r\n", (unsigned long)i);
+    }
+    else if (st != STATUS_OK)
+    {
+      return st;
+    }
+    else
+    {
+      print_log_record(&r);
+    }
+  }
+  return STATUS_OK;
+}
+
+/* log clear [confirm] */
+static status_t log_clear(int argc, char *argv[])
+{
+  if (argc > 3)
+  {
+    return STATUS_ERR_PARAM;
+  }
+  const bool confirmed = (argc == 3);
+  if (confirmed && (strcmp(argv[2], "confirm") != 0))
+  {
+    return STATUS_ERR_PARAM;
+  }
+
+  uint32_t count;
+  status_t st = data_log_count(&count);
+  if (st != STATUS_OK)
+  {
+    return st;
+  }
+  if (count == 0u)
+  {
+    shell_printf("log is already empty\r\n");
+    return STATUS_OK;
+  }
+  if (!confirmed)
+  {
+    shell_printf("refused: this erases %lu record(s). Add 'confirm' to proceed\r\n",
+                 (unsigned long)count);
+    return STATUS_OK;
+  }
+
+  uint32_t sectors = 0u;
+  const uint32_t t0 = HAL_GetTick();
+  st = data_log_clear(&sectors);
+  shell_printf("erased %lu sector(s) in %lu ms\r\n", (unsigned long)sectors,
+               (unsigned long)(HAL_GetTick() - t0));
+  return st;
+}
+
+static status_t cmd_log(int argc, char *argv[])
+{
+  if (argc < 2)
+  {
+    shell_printf("log save\r\n");
+    shell_printf("log status\r\n");
+    shell_printf("log dump [n]\r\n");
+    shell_printf("log clear [confirm]\r\n");
+    return STATUS_OK;
+  }
+  if (w25q_capacity() == 0u)
+  {
+    shell_printf("flash not detected, run 'flash info'\r\n");
+    return STATUS_ERR_ID;
+  }
+
+  if (strcmp(argv[1], "save") == 0)
+  {
+    return (argc == 2) ? log_save() : STATUS_ERR_PARAM;
+  }
+  if (strcmp(argv[1], "status") == 0)
+  {
+    return (argc == 2) ? log_status() : STATUS_ERR_PARAM;
+  }
+  if (strcmp(argv[1], "dump") == 0)
+  {
+    return log_dump(argc, argv);
+  }
+  if (strcmp(argv[1], "clear") == 0)
+  {
+    return log_clear(argc, argv);
+  }
+  return STATUS_ERR_PARAM;
+}
+
 /* const: the table stays in Flash. It must come after all handlers.
  * To add a command: write a handler above and add one row here. */
 static const ShellCmd s_cmds[] = {
@@ -772,6 +981,7 @@ static const ShellCmd s_cmds[] = {
     {"i2c", "i2c scan", "list devices on the I2C bus", cmd_i2c},
     {"sensor", "sensor read", "print the latest sensor data", cmd_sensor},
     {"flash", "flash info|read|erase|write", "flash tools, run 'flash'", cmd_flash},
+    {"log", "log <subcommand>", "save sensor data to flash, run 'log'", cmd_log},
 };
 
 status_t app_cmds_init(const Led *led)

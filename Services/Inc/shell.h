@@ -5,7 +5,7 @@
 #include "status.h"
 
 #define SHELL_LINE_MAX 64u /* Max input line length including NUL */
-#define SHELL_ARGS_MAX 4   /* Max tokens per command */
+#define SHELL_ARGS_MAX 6   /* Max tokens per command */
 
 /* Handler gets tokens in argv. Return STATUS_ERR_PARAM to print usage. */
 typedef status_t (*ShellHandler)(int argc, char *argv[]);

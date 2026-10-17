@@ -6,6 +6,7 @@
 #include "sensor_service.h"
 #include "spi_port.h"
 #include "w25q128.h"
+#include "flash_selftest.h"
 
 #include <stddef.h>
 #include <string.h>
@@ -680,6 +681,49 @@ void app_cmds_poll(void)
   }
 }
 
+/* flash test [confirm] */
+static status_t flash_test(int argc, char *argv[])
+{
+  if (argc > 3)
+  {
+    return STATUS_ERR_PARAM;
+  }
+  const bool confirmed = (argc == 3);
+  if (confirmed && (strcmp(argv[2], "confirm") != 0))
+  {
+    return STATUS_ERR_PARAM;
+  }
+
+  const uint32_t addr = flash_selftest_addr();
+  if (addr == 0u)
+  {
+    shell_printf("flash not detected, run 'flash info'\r\n");
+    return STATUS_ERR_ID;
+  }
+  if (!confirmed)
+  {
+    shell_printf("refused: this erases the sector at 0x%06lX. Add 'confirm' to proceed\r\n",
+                 (unsigned long)addr);
+    return STATUS_OK;
+  }
+
+  shell_printf("testing sector 0x%06lX, shell is busy until done\r\n", (unsigned long)addr);
+
+  flash_selftest_t r;
+  const status_t st = flash_selftest_run(&r);
+  if (st == STATUS_OK)
+  {
+    shell_printf("PASS: erase %lu ms, write %u B in %lu ms, verify %lu ms\r\n",
+                 (unsigned long)r.erase_ms, (unsigned)r.test_len,
+                 (unsigned long)r.write_ms, (unsigned long)r.verify_ms);
+  }
+  else
+  {
+    shell_printf("FAIL at '%s': error %d\r\n", r.failed_step, (int)st);
+  }
+  return st;
+}
+
 static status_t cmd_flash(int argc, char *argv[])
 {
   if (argc < 2)
@@ -690,6 +734,7 @@ static status_t cmd_flash(int argc, char *argv[])
     shell_printf("flash erase <addr>|chip [confirm]\r\n");
     shell_printf("flash write <addr> <hex> [confirm]\r\n");
     shell_printf("flash scan [stop]\r\n");
+    shell_printf("flash test [confirm]\r\n");
     return STATUS_OK;
   }
   if (strcmp(argv[1], "info") == 0)
@@ -711,6 +756,10 @@ static status_t cmd_flash(int argc, char *argv[])
   if (strcmp(argv[1], "scan") == 0)
   {
     return flash_scan(argc, argv);
+  }
+  if (strcmp(argv[1], "test") == 0)
+  {
+    return flash_test(argc, argv);
   }
   return STATUS_ERR_PARAM;
 }

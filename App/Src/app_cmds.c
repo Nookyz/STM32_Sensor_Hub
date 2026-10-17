@@ -11,6 +11,13 @@
 #include <string.h>
 
 #define FLASH_READ_MAX 256u /* Bytes per 'flash read', keeps output short */
+#define FLASH_WRITE_MAX 16u /* Bytes per 'flash write': the shell line is only 63 chars */
+
+/* ---- Background flash scan ---- */
+#define SCAN_LIST_MAX 16u       /* Non-blank sectors printed one by one */
+#define SCAN_PROGRESS_STEP 512u /* Sectors between progress lines */
+
+static uint8_t s_wr_buf[FLASH_WRITE_MAX];
 
 /* Objects the commands operate on, set once in app_cmds_init() */
 static const Led *s_led;
@@ -18,6 +25,17 @@ static const Led *s_led;
 /* Static, not on the stack: the CubeMX default stack is only 1 KB and
  * vsnprintf below already needs a good part of it */
 static uint8_t s_rd_buf[FLASH_READ_MAX];
+
+typedef struct
+{
+  bool active;
+  bool dirty;        /* Current sector holds a byte other than 0xFF */
+  uint32_t addr;     /* Next address to read */
+  uint32_t nonblank; /* Sectors that are not blank so far */
+  uint32_t t_start;
+} flash_scan_t;
+
+static flash_scan_t s_scan;
 
 /* Known sensor addresses, to label scan results */
 typedef struct
@@ -260,12 +278,65 @@ static void dump_line(uint32_t addr, const uint8_t *p, uint8_t n)
   shell_printf("%s", line);
 }
 
+/* Parse a hex string such as "deadbeef" into bytes. Returns the byte count,
+ * or -1 for an odd length, a non-hex character or more than max bytes. */
+static int parse_hex_bytes(const char *s, uint8_t *out, size_t max)
+{
+  const size_t n = strlen(s);
+  if ((n == 0u) || ((n & 1u) != 0u) || ((n / 2u) > max))
+  {
+    return -1;
+  }
+
+  for (size_t i = 0u; i < n; i++)
+  {
+    const char c = s[i];
+    uint8_t v;
+    if ((c >= '0') && (c <= '9'))
+    {
+      v = (uint8_t)(c - '0');
+    }
+    else if ((c >= 'a') && (c <= 'f'))
+    {
+      v = (uint8_t)(c - 'a' + 10);
+    }
+    else if ((c >= 'A') && (c <= 'F'))
+    {
+      v = (uint8_t)(c - 'A' + 10);
+    }
+    else
+    {
+      return -1;
+    }
+
+    if ((i & 1u) == 0u)
+    {
+      out[i / 2u] = (uint8_t)(v << 4);
+    }
+    else
+    {
+      out[i / 2u] |= v;
+    }
+  }
+  return (int)(n / 2u);
+}
+
+static void print_flash_busy(void)
+{
+  shell_printf("flash busy: erase or program in progress\r\n");
+}
+
 static status_t flash_info(void)
 {
   /* Re-detect every time, so a flash wired after boot is picked up */
   w25q_info_t info;
   const status_t st = w25q_init(&info);
 
+  if (st == STATUS_ERR_BUSY)
+  {
+    shell_printf("status   : busy (erase or program in progress)\r\n");
+    return STATUS_OK;
+  }
   if ((st != STATUS_OK) && (st != STATUS_ERR_ID))
   {
     return st; /* SPI failure, nothing to print */
@@ -332,6 +403,11 @@ static status_t flash_read(int argc, char *argv[])
                  (unsigned long)w25q_capacity());
     return st;
   }
+  if (st == STATUS_ERR_BUSY)
+  {
+    print_flash_busy();
+    return st;
+  }
   if (st != STATUS_OK)
   {
     return st;
@@ -345,11 +421,276 @@ static status_t flash_read(int argc, char *argv[])
   return STATUS_OK;
 }
 
+/* flash erase <addr>|chip [confirm] */
+static status_t flash_erase(int argc, char *argv[])
+{
+  if ((argc < 3) || (argc > 4))
+  {
+    return STATUS_ERR_PARAM;
+  }
+  const bool confirmed = (argc == 4);
+  if (confirmed && (strcmp(argv[3], "confirm") != 0))
+  {
+    return STATUS_ERR_PARAM;
+  }
+  if (w25q_capacity() == 0u)
+  {
+    shell_printf("flash not detected, run 'flash info'\r\n");
+    return STATUS_ERR_ID;
+  }
+
+  status_t st;
+
+  if (strcmp(argv[2], "chip") == 0)
+  {
+    if (!confirmed)
+    {
+      shell_printf("refused: this erases the WHOLE flash. Add 'confirm' to proceed\r\n");
+      return STATUS_OK;
+    }
+    st = w25q_chip_erase_start();
+    if (st == STATUS_OK)
+    {
+      shell_printf("chip erase started (up to 200 s). 'flash info' shows when it is done\r\n");
+    }
+  }
+  else
+  {
+    uint32_t addr;
+    if (!parse_u32(argv[2], &addr))
+    {
+      return STATUS_ERR_PARAM;
+    }
+    if ((addr >= w25q_capacity()) || ((addr % W25Q_SECTOR_SIZE) != 0u))
+    {
+      shell_printf("address must be a multiple of %u, below %lu\r\n",
+                   (unsigned)W25Q_SECTOR_SIZE, (unsigned long)w25q_capacity());
+      return STATUS_ERR_PARAM;
+    }
+    if (!confirmed)
+    {
+      shell_printf("refused: this erases %u bytes at 0x%06lX. Add 'confirm' to proceed\r\n",
+                   (unsigned)W25Q_SECTOR_SIZE, (unsigned long)addr);
+      return STATUS_OK;
+    }
+
+    const uint32_t t0 = HAL_GetTick();
+    st = w25q_sector_erase(addr);
+    if (st == STATUS_OK)
+    {
+      shell_printf("erased %u bytes at 0x%06lX (%lu ms)\r\n",
+                   (unsigned)W25Q_SECTOR_SIZE, (unsigned long)addr,
+                   (unsigned long)(HAL_GetTick() - t0));
+    }
+  }
+
+  if (st == STATUS_ERR_BUSY)
+  {
+    print_flash_busy();
+  }
+  return st;
+}
+
+/* flash write <addr> <hex> [confirm] */
+static status_t flash_write(int argc, char *argv[])
+{
+  if ((argc < 4) || (argc > 5))
+  {
+    return STATUS_ERR_PARAM;
+  }
+  const bool confirmed = (argc == 5);
+  if (confirmed && (strcmp(argv[4], "confirm") != 0))
+  {
+    return STATUS_ERR_PARAM;
+  }
+
+  uint32_t addr;
+  if (!parse_u32(argv[2], &addr))
+  {
+    return STATUS_ERR_PARAM;
+  }
+  const int len = parse_hex_bytes(argv[3], s_wr_buf, FLASH_WRITE_MAX);
+  if (len < 0)
+  {
+    shell_printf("data: even number of hex digits, 1..%u bytes\r\n", (unsigned)FLASH_WRITE_MAX);
+    return STATUS_ERR_PARAM;
+  }
+
+  /* Programming can only clear bits: a non-blank target would end up with
+   * a mix of old and new data. This check also validates the range. */
+  status_t st = w25q_check_blank(addr, (uint16_t)len);
+  if (st == STATUS_ERR_VERIFY)
+  {
+    shell_printf("area is not erased: erase the sector first\r\n");
+    return st;
+  }
+  if (st == STATUS_ERR_PARAM)
+  {
+    shell_printf("out of range: flash size is %lu bytes\r\n",
+                 (unsigned long)w25q_capacity());
+    return st;
+  }
+  if (st == STATUS_ERR_ID)
+  {
+    shell_printf("flash not detected, run 'flash info'\r\n");
+    return st;
+  }
+  if (st == STATUS_ERR_BUSY)
+  {
+    print_flash_busy();
+    return st;
+  }
+  if (st != STATUS_OK)
+  {
+    return st;
+  }
+
+  if (!confirmed)
+  {
+    shell_printf("refused: this writes %d bytes at 0x%06lX. Add 'confirm' to proceed\r\n",
+                 len, (unsigned long)addr);
+    return STATUS_OK;
+  }
+
+  const uint32_t t0 = HAL_GetTick();
+  st = w25q_write(addr, s_wr_buf, (uint16_t)len);
+  if (st == STATUS_OK)
+  {
+    st = w25q_verify(addr, s_wr_buf, (uint16_t)len);
+  }
+  if (st == STATUS_ERR_VERIFY)
+  {
+    shell_printf("verify failed: read-back differs from the written data\r\n");
+    return st;
+  }
+  if (st != STATUS_OK)
+  {
+    return st;
+  }
+
+  shell_printf("wrote %d bytes at 0x%06lX, verified (%lu ms)\r\n",
+               len, (unsigned long)addr, (unsigned long)(HAL_GetTick() - t0));
+  return STATUS_OK;
+}
+
+/* flash scan | flash scan stop */
+static status_t flash_scan(int argc, char *argv[])
+{
+  if (argc == 3)
+  {
+    if (strcmp(argv[2], "stop") != 0)
+    {
+      return STATUS_ERR_PARAM;
+    }
+    if (s_scan.active)
+    {
+      s_scan.active = false;
+      shell_printf("scan stopped at 0x%06lX\r\n", (unsigned long)s_scan.addr);
+    }
+    else
+    {
+      shell_printf("no scan running\r\n");
+    }
+    return STATUS_OK;
+  }
+  if (argc != 2)
+  {
+    return STATUS_ERR_PARAM;
+  }
+  if (s_scan.active)
+  {
+    shell_printf("scan already running, 'flash scan stop' cancels it\r\n");
+    return STATUS_OK;
+  }
+  if (w25q_capacity() == 0u)
+  {
+    shell_printf("flash not detected, run 'flash info'\r\n");
+    return STATUS_ERR_ID;
+  }
+
+  s_scan = (flash_scan_t){.active = true, .t_start = HAL_GetTick()};
+  shell_printf("scan started: %lu sectors, about 30 s, other commands keep working\r\n",
+               (unsigned long)(w25q_capacity() / W25Q_SECTOR_SIZE));
+  return STATUS_OK;
+}
+
+void app_cmds_poll(void)
+{
+  if (!s_scan.active)
+  {
+    return;
+  }
+
+  /* One 256-byte chunk per call keeps every main-loop pass short.
+   * s_rd_buf is shared with 'flash read', which is safe: both run to
+   * completion in the main loop and never overlap. */
+  const status_t st = w25q_read(s_scan.addr, s_rd_buf, FLASH_READ_MAX);
+  if (st != STATUS_OK)
+  {
+    /* A running chip erase lands here as STATUS_ERR_BUSY */
+    shell_printf("scan aborted at 0x%06lX, error %d\r\n",
+                 (unsigned long)s_scan.addr, (int)st);
+    s_scan.active = false;
+    return;
+  }
+
+  for (uint32_t i = 0u; i < FLASH_READ_MAX; i++)
+  {
+    if (s_rd_buf[i] != 0xFFu)
+    {
+      s_scan.dirty = true;
+      break;
+    }
+  }
+  s_scan.addr += FLASH_READ_MAX;
+
+  /* A sector is complete every 4096 bytes */
+  if ((s_scan.addr % W25Q_SECTOR_SIZE) == 0u)
+  {
+    if (s_scan.dirty)
+    {
+      s_scan.nonblank++;
+      if (s_scan.nonblank <= SCAN_LIST_MAX)
+      {
+        shell_printf("  0x%06lX not blank\r\n",
+                     (unsigned long)(s_scan.addr - W25Q_SECTOR_SIZE));
+      }
+      s_scan.dirty = false;
+    }
+    const uint32_t done = s_scan.addr / W25Q_SECTOR_SIZE;
+    if (((done % SCAN_PROGRESS_STEP) == 0u) && (s_scan.addr < w25q_capacity()))
+    {
+      shell_printf("  %lu/%lu sectors\r\n", (unsigned long)done,
+                   (unsigned long)(w25q_capacity() / W25Q_SECTOR_SIZE));
+    }
+  }
+
+  if (s_scan.addr >= w25q_capacity())
+  {
+    s_scan.active = false;
+    shell_printf("scan done: %lu sectors, %lu not blank, %lu ms\r\n",
+                 (unsigned long)(w25q_capacity() / W25Q_SECTOR_SIZE),
+                 (unsigned long)s_scan.nonblank,
+                 (unsigned long)(HAL_GetTick() - s_scan.t_start));
+    if (s_scan.nonblank > SCAN_LIST_MAX)
+    {
+      shell_printf("only the first %u non-blank sectors were listed\r\n",
+                   (unsigned)SCAN_LIST_MAX);
+    }
+  }
+}
+
 static status_t cmd_flash(int argc, char *argv[])
 {
   if (argc < 2)
   {
-    return STATUS_ERR_PARAM;
+    /* One short message per call: shell_printf output is size-limited */
+    shell_printf("flash info\r\n");
+    shell_printf("flash read <addr> <len>\r\n");
+    shell_printf("flash erase <addr>|chip [confirm]\r\n");
+    shell_printf("flash write <addr> <hex> [confirm]\r\n");
+    shell_printf("flash scan [stop]\r\n");
+    return STATUS_OK;
   }
   if (strcmp(argv[1], "info") == 0)
   {
@@ -358,6 +699,18 @@ static status_t cmd_flash(int argc, char *argv[])
   if (strcmp(argv[1], "read") == 0)
   {
     return flash_read(argc, argv);
+  }
+  if (strcmp(argv[1], "erase") == 0)
+  {
+    return flash_erase(argc, argv);
+  }
+  if (strcmp(argv[1], "write") == 0)
+  {
+    return flash_write(argc, argv);
+  }
+  if (strcmp(argv[1], "scan") == 0)
+  {
+    return flash_scan(argc, argv);
   }
   return STATUS_ERR_PARAM;
 }
@@ -369,7 +722,7 @@ static const ShellCmd s_cmds[] = {
     {"led", "led on|off|toggle", "control the LED", cmd_led},
     {"i2c", "i2c scan", "list devices on the I2C bus", cmd_i2c},
     {"sensor", "sensor read", "print the latest sensor data", cmd_sensor},
-    {"flash", "flash info|read <addr> <len>", "flash ID and hex dump", cmd_flash},
+    {"flash", "flash info|read|erase|write", "flash tools, run 'flash'", cmd_flash},
 };
 
 status_t app_cmds_init(const Led *led)

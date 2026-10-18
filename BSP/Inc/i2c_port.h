@@ -7,9 +7,11 @@
 
 typedef struct
 {
-  uint32_t errors;     /* Timeouts, bus errors, stuck busy */
-  uint32_t nacks;      /* Device did not acknowledge (not counted by probe) */
-  uint32_t recoveries; /* Bus recovery attempts */
+  uint32_t errors;      /* Timeouts, bus errors, stuck busy */
+  uint32_t nacks;       /* Device did not acknowledge (not counted by probe) */
+  uint32_t recoveries;  /* Bus recovery attempts */
+  uint32_t max_xfer_us; /* Longest successful transfer since reset
+                           (filled in by i2c_port_get_stats) */
 } i2c_stats_t;
 
 /** Bind the driver to a HAL handle. Call after MX_I2C1_Init(). */
@@ -29,5 +31,8 @@ status_t i2c_port_mem_read(uint8_t addr7, uint8_t reg, uint8_t *data, uint16_t l
 status_t i2c_port_recover(void);
 
 void i2c_port_get_stats(i2c_stats_t *out);
+
+/** Clear the longest-transfer record. */
+void i2c_port_reset_max(void);
 
 #endif /* I2C_PORT_H */

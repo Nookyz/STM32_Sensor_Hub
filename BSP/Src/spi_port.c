@@ -58,3 +58,17 @@ void spi_port_get_stats(spi_stats_t *out)
     *out = s_stats;
   }
 }
+
+uint32_t spi_port_get_clock_hz(void)
+{
+  if (s_hspi == NULL)
+  {
+    return 0u;
+  }
+  /* The prescaler field is a 3-bit code: code n divides the bus clock by 2^(n+1).
+   * SPI1 sits on APB2, SPI2 and SPI3 on APB1. */
+  const uint32_t shift = (s_hspi->Init.BaudRatePrescaler >> SPI_CR1_BR_Pos) + 1u;
+  const uint32_t pclk = (s_hspi->Instance == SPI1) ? HAL_RCC_GetPCLK2Freq()
+                                                   : HAL_RCC_GetPCLK1Freq();
+  return pclk >> shift;
+}

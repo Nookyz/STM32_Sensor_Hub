@@ -20,6 +20,9 @@ status_t spi_port_write(const uint8_t *data, uint16_t len);
  *  on MOSI (HAL behaviour), so slaves must ignore input in this phase. */
 status_t spi_port_read(uint8_t *data, uint16_t len);
 
+/** Actual SCK frequency in Hz, 0 before spi_port_init(). */
+uint32_t spi_port_get_clock_hz(void);
+
 void spi_port_get_stats(spi_stats_t *out);
 
 #endif /* SPI_PORT_H */

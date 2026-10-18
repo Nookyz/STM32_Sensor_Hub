@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stddef.h>
 #include <string.h>
+#include "perf.h"
 
 /* ---- Sensor log ---- */
 #define LOG_DUMP_DEFAULT 5u
@@ -68,6 +69,21 @@ static const char *known_name(uint8_t addr)
   return "unknown";
 }
 
+static const char *clock_source(void)
+{
+  switch (__HAL_RCC_GET_SYSCLK_SOURCE())
+  {
+  case RCC_SYSCLKSOURCE_STATUS_HSI:
+    return "HSI";
+  case RCC_SYSCLKSOURCE_STATUS_HSE:
+    return "HSE";
+  case RCC_SYSCLKSOURCE_STATUS_PLLCLK:
+    return ((RCC->PLLCFGR & RCC_PLLCFGR_PLLSRC) != 0u) ? "PLL(HSE)" : "PLL(HSI)";
+  default:
+    return "?";
+  }
+}
+
 /* ---- Command handlers ---- */
 
 static status_t cmd_status(int argc, char *argv[])
@@ -92,6 +108,41 @@ static status_t cmd_status(int argc, char *argv[])
   spi_stats_t ss;
   spi_port_get_stats(&ss);
   shell_printf("spi    : errors=%lu\r\n", (unsigned long)ss.errors);
+  shell_printf("clock  : %s, sys %lu Hz, spi %lu Hz\r\n", clock_source(),
+               (unsigned long)HAL_RCC_GetSysClockFreq(),
+               (unsigned long)spi_port_get_clock_hz());
+  return STATUS_OK;
+}
+
+/* perf | perf reset */
+static status_t cmd_perf(int argc, char *argv[])
+{
+  if (argc == 2)
+  {
+    if (strcmp(argv[1], "reset") != 0)
+    {
+      return STATUS_ERR_PARAM;
+    }
+    perf_reset();
+    i2c_port_reset_max();
+    shell_printf("perf counters reset\r\n");
+    return STATUS_OK;
+  }
+  if (argc != 1)
+  {
+    return STATUS_ERR_PARAM;
+  }
+
+  perf_loop_t l;
+  i2c_stats_t is;
+  perf_loop_get(&l);
+  i2c_port_get_stats(&is);
+
+  shell_printf("loop   : max %lu us, avg %lu.%lu us, %lu passes\r\n",
+               (unsigned long)l.max_us,
+               (unsigned long)(l.avg_x10_us / 10u), (unsigned long)(l.avg_x10_us % 10u),
+               (unsigned long)l.passes);
+  shell_printf("i2c    : longest transfer %lu us\r\n", (unsigned long)is.max_xfer_us);
   return STATUS_OK;
 }
 
@@ -980,8 +1031,9 @@ static const ShellCmd s_cmds[] = {
     {"led", "led on|off|toggle", "control the LED", cmd_led},
     {"i2c", "i2c scan", "list devices on the I2C bus", cmd_i2c},
     {"sensor", "sensor read", "print the latest sensor data", cmd_sensor},
-    {"flash", "flash info|read|erase|write", "flash tools, run 'flash'", cmd_flash},
+    {"flash", "flash <subcommand>", "flash tools, run 'flash'", cmd_flash}, // info|read|erase|write
     {"log", "log <subcommand>", "save sensor data to flash, run 'log'", cmd_log},
+    {"perf", "perf [reset]", "loop timing statistics", cmd_perf},
 };
 
 status_t app_cmds_init(const Led *led)

@@ -12,16 +12,20 @@
 
 typedef struct
 {
+  uint32_t rx_bytes;     /* Bytes received */
+  uint32_t rx_events;    /* RX interrupts: IDLE, half and full DMA buffer */
   uint32_t rx_overflow;  /* Bytes dropped: RX ring buffer was full */
-  uint32_t rx_hw_errors; /* ORE / FE / NE / PE events */
+  uint32_t rx_hw_errors; /* ORE / FE / NE / PE events (each restarts the RX DMA) */
   uint32_t tx_waits;     /* write() calls that had to wait for free space */
   uint32_t tx_dropped;   /* Bytes lost: no space within the wait timeout */
   uint32_t tx_errors;    /* DMA start or transfer failures (chunk discarded) */
   uint32_t tx_peak;      /* Highest TX buffer fill seen, in bytes */
+  uint32_t rx_restarts;  /* RX DMA restarts after the HAL ended a reception */
 } uart_stats_t;
 
-/** Bind the driver to a HAL handle and start interrupt-driven RX.
- *  The USART2_TX DMA stream must be configured in CubeMX. */
+/** Bind the driver to a HAL handle and start DMA reception with IDLE
+ *  detection. Both USART2_TX and USART2_RX DMA streams must be configured
+ *  in CubeMX, otherwise STATUS_ERR_PARAM is returned. */
 status_t uart_port_init(UART_HandleTypeDef *huart);
 
 /** Non-blocking: fetch one received byte. Returns false if none. */

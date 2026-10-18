@@ -105,6 +105,9 @@ static status_t cmd_status(int argc, char *argv[])
                (unsigned long)us.tx_waits, (unsigned long)us.tx_dropped,
                (unsigned long)us.tx_errors, (unsigned long)us.tx_peak,
                (unsigned)UART_PORT_TX_BUF_SIZE);
+  shell_printf("uart rx: bytes=%lu events=%lu restarts=%lu\r\n",
+               (unsigned long)us.rx_bytes, (unsigned long)us.rx_events,
+               (unsigned long)us.rx_restarts);
   shell_printf("i2c    : errors=%lu nacks=%lu recoveries=%lu\r\n",
                (unsigned long)is.errors,
                (unsigned long)is.nacks,

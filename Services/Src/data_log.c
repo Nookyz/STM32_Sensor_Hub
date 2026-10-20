@@ -1,5 +1,6 @@
 #include "data_log.h"
 #include "crc16.h"
+#include "erase_job.h"
 
 #include <string.h>
 
@@ -195,10 +196,10 @@ status_t data_log_read(uint32_t index, log_record_t *out)
   return decode(buf, out);
 }
 
-status_t data_log_clear(uint32_t *sectors_erased)
+status_t data_log_clear_start(uint32_t *sectors)
 {
   uint32_t count;
-  status_t st = find_end(&count);
+  const status_t st = find_end(&count);
   if (st != STATUS_OK)
   {
     return st;
@@ -206,23 +207,13 @@ status_t data_log_clear(uint32_t *sectors_erased)
 
   const uint32_t used = (count == 0u) ? 0u
                                       : (((count - 1u) / DATA_LOG_PER_SECTOR) + 1u);
-  uint32_t erased = 0u;
-
-  /* Last sector first: if this is interrupted, what remains is still a
-   * contiguous prefix, so the bisection keeps working */
-  for (uint32_t s = used; s > 0u; s--)
+  if (sectors != NULL)
   {
-    st = w25q_sector_erase(DATA_LOG_START_ADDR + ((s - 1u) * W25Q_SECTOR_SIZE));
-    if (st != STATUS_OK)
-    {
-      break;
-    }
-    erased++;
+    *sectors = used;
   }
-
-  if (sectors_erased != NULL)
+  if (used == 0u)
   {
-    *sectors_erased = erased;
+    return STATUS_OK;
   }
-  return st;
+  return erase_job_start_range(DATA_LOG_START_ADDR, used, true);
 }

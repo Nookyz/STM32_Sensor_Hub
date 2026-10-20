@@ -25,6 +25,10 @@ status_t w25q_init(w25q_info_t *info);
 /** Capacity found by the last successful w25q_init(), 0 if none. */
 uint32_t w25q_capacity(void);
 
+/** Start erasing the 4 KB sector at addr (must be sector aligned) and return
+ *  immediately. The chip stays busy for 45 ms typically, 400 ms at most. */
+status_t w25q_sector_erase_start(uint32_t addr);
+
 /** Read status register 1. Bit 0 is BUSY (erase or program in progress). */
 status_t w25q_read_status(uint8_t *sr1);
 

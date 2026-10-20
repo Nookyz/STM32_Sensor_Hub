@@ -36,7 +36,10 @@ status_t data_log_append(const sensor_data_t *d, uint32_t now_ms, uint32_t *inde
 /** Read record number index. STATUS_ERR_CRC for a damaged record. */
 status_t data_log_read(uint32_t index, log_record_t *out);
 
-/** Erase every used sector, last one first. Blocks about 100 ms per sector. */
-status_t data_log_clear(uint32_t *sectors_erased);
+/** Start erasing every used sector in the background, the last one first, so
+ *  an interrupted clear leaves a contiguous prefix. Returns at once.
+ *  *sectors receives the number of sectors to erase, 0 if the log was already
+ *  empty (nothing is started then). STATUS_ERR_BUSY if an erase is running. */
+status_t data_log_clear_start(uint32_t *sectors);
 
 #endif /* DATA_LOG_H */

@@ -1,4 +1,5 @@
 #include "i2c_port.h"
+#include "perf.h"
 
 #define I2C_TIMEOUT_MS 20u
 #define PROBE_TIMEOUT_MS 5u
@@ -12,6 +13,7 @@
 
 static I2C_HandleTypeDef *s_hi2c;
 static i2c_stats_t s_stats;
+static uint32_t s_max_cycles; /* Longest successful HAL transfer */
 
 static inline uint16_t addr8(uint8_t addr7)
 {
@@ -120,6 +122,18 @@ static status_t finish(HAL_StatusTypeDef hs)
   return st;
 }
 
+/* Time one HAL transfer. Only successful transfers count toward the maximum:
+ * a failed one is bounded by I2C_TIMEOUT_MS plus bus recovery. */
+static status_t timed_finish(HAL_StatusTypeDef hs, uint32_t t0)
+{
+  const uint32_t dt = perf_cycles() - t0;
+  if ((hs == HAL_OK) && (dt > s_max_cycles))
+  {
+    s_max_cycles = dt;
+  }
+  return finish(hs);
+}
+
 status_t i2c_port_init(I2C_HandleTypeDef *hi2c)
 {
   if (hi2c == NULL)
@@ -159,7 +173,10 @@ status_t i2c_port_write(uint8_t addr7, const uint8_t *data, uint16_t len)
   {
     return STATUS_ERR_PARAM;
   }
-  return finish(HAL_I2C_Master_Transmit(s_hi2c, addr8(addr7), (uint8_t *)data, len, I2C_TIMEOUT_MS));
+  const uint32_t t0 = perf_cycles();
+  const HAL_StatusTypeDef hs = HAL_I2C_Master_Transmit(s_hi2c, addr8(addr7),
+                                                       (uint8_t *)data, len, I2C_TIMEOUT_MS);
+  return timed_finish(hs, t0);
 }
 
 status_t i2c_port_read(uint8_t addr7, uint8_t *data, uint16_t len)
@@ -168,7 +185,10 @@ status_t i2c_port_read(uint8_t addr7, uint8_t *data, uint16_t len)
   {
     return STATUS_ERR_PARAM;
   }
-  return finish(HAL_I2C_Master_Receive(s_hi2c, addr8(addr7), data, len, I2C_TIMEOUT_MS));
+  const uint32_t t0 = perf_cycles();
+  const HAL_StatusTypeDef hs = HAL_I2C_Master_Receive(s_hi2c, addr8(addr7),
+                                                      data, len, I2C_TIMEOUT_MS);
+  return timed_finish(hs, t0);
 }
 
 status_t i2c_port_mem_write(uint8_t addr7, uint8_t reg, const uint8_t *data, uint16_t len)
@@ -177,8 +197,11 @@ status_t i2c_port_mem_write(uint8_t addr7, uint8_t reg, const uint8_t *data, uin
   {
     return STATUS_ERR_PARAM;
   }
-  return finish(HAL_I2C_Mem_Write(s_hi2c, addr8(addr7), reg, I2C_MEMADD_SIZE_8BIT,
-                                  (uint8_t *)data, len, I2C_TIMEOUT_MS));
+  const uint32_t t0 = perf_cycles();
+  const HAL_StatusTypeDef hs = HAL_I2C_Mem_Write(s_hi2c, addr8(addr7), reg,
+                                                 I2C_MEMADD_SIZE_8BIT,
+                                                 (uint8_t *)data, len, I2C_TIMEOUT_MS);
+  return timed_finish(hs, t0);
 }
 
 status_t i2c_port_mem_read(uint8_t addr7, uint8_t reg, uint8_t *data, uint16_t len)
@@ -187,8 +210,11 @@ status_t i2c_port_mem_read(uint8_t addr7, uint8_t reg, uint8_t *data, uint16_t l
   {
     return STATUS_ERR_PARAM;
   }
-  return finish(HAL_I2C_Mem_Read(s_hi2c, addr8(addr7), reg, I2C_MEMADD_SIZE_8BIT,
-                                 data, len, I2C_TIMEOUT_MS));
+  const uint32_t t0 = perf_cycles();
+  const HAL_StatusTypeDef hs = HAL_I2C_Mem_Read(s_hi2c, addr8(addr7), reg,
+                                                I2C_MEMADD_SIZE_8BIT,
+                                                data, len, I2C_TIMEOUT_MS);
+  return timed_finish(hs, t0);
 }
 
 void i2c_port_get_stats(i2c_stats_t *out)
@@ -196,5 +222,11 @@ void i2c_port_get_stats(i2c_stats_t *out)
   if (out != NULL)
   {
     *out = s_stats;
+    out->max_xfer_us = perf_cycles_to_us(s_max_cycles);
   }
+}
+
+void i2c_port_reset_max(void)
+{
+  s_max_cycles = 0u;
 }

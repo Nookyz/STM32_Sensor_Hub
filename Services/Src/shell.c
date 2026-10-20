@@ -81,7 +81,7 @@ static int tokenize(char *line, char *argv[], int max)
   return argc;
 }
 
-static void execute(char *line)
+static void execute_one(char *line)
 {
   char *argv[SHELL_ARGS_MAX];
 
@@ -127,6 +127,28 @@ static void execute(char *line)
     }
   }
   out("unknown command, type 'help'\r\n");
+}
+
+/* Run several commands separated by ';' on one line. Each one starts only
+ * after the previous handler has returned. */
+static void execute(char *line)
+{
+  char *seg = line;
+
+  for (char *p = line;; p++)
+  {
+    if ((*p == ';') || (*p == '\0'))
+    {
+      const bool last = (*p == '\0');
+      *p = '\0'; /* Close this segment, the tokenizer stops here */
+      execute_one(seg);
+      if (last)
+      {
+        break;
+      }
+      seg = p + 1;
+    }
+  }
 }
 
 static void on_char(uint8_t c)

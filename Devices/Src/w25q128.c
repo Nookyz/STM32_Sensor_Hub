@@ -362,7 +362,7 @@ status_t w25q_write(uint32_t addr, const uint8_t *data, uint16_t len)
   return STATUS_OK;
 }
 
-status_t w25q_sector_erase(uint32_t addr)
+status_t w25q_sector_erase_start(uint32_t addr)
 {
   if ((addr % W25Q_SECTOR_SIZE) != 0u)
   {
@@ -386,7 +386,12 @@ status_t w25q_sector_erase(uint32_t addr)
 
   uint8_t cmd[4];
   build_cmd(cmd, CMD_SECTOR_ERASE, addr);
-  st = transaction(cmd, sizeof(cmd), NULL, 0u);
+  return transaction(cmd, sizeof(cmd), NULL, 0u); /* The erase starts when CS rises */
+}
+
+status_t w25q_sector_erase(uint32_t addr)
+{
+  const status_t st = w25q_sector_erase_start(addr);
   if (st != STATUS_OK)
   {
     return st;

@@ -12,6 +12,7 @@
 #include <stddef.h>
 #include <string.h>
 #include "perf.h"
+#include "scheduler.h"
 
 /* ---- Sensor log ---- */
 #define LOG_DUMP_DEFAULT 5u
@@ -673,7 +674,7 @@ static status_t flash_scan(int argc, char *argv[])
   }
 
   s_scan = (flash_scan_t){.active = true, .t_start = HAL_GetTick()};
-  shell_printf("scan started: %lu sectors, about 30 s, other commands keep working\r\n",
+  shell_printf("scan started: %lu sectors, about 1 min, other commands keep working\r\n",
                (unsigned long)(w25q_capacity() / W25Q_SECTOR_SIZE));
   return STATUS_OK;
 }
@@ -1031,6 +1032,61 @@ static status_t cmd_log(int argc, char *argv[])
   return STATUS_ERR_PARAM;
 }
 
+static void print_task_row(const sched_info_t *in)
+{
+  char per[16];
+  char avg[16];
+  char late[16];
+
+  if (in->period_ms == 0u)
+  {
+    strcpy(per, "pass");
+    strcpy(late, "-"); /* Lateness has no meaning without a schedule */
+  }
+  else
+  {
+    snprintf(per, sizeof(per), "%lums", (unsigned long)in->period_ms);
+    snprintf(late, sizeof(late), "%lu", (unsigned long)in->max_late_ms);
+  }
+  snprintf(avg, sizeof(avg), "%lu.%lu",
+           (unsigned long)(in->avg_x10_us / 10u), (unsigned long)(in->avg_x10_us % 10u));
+
+  shell_printf("%-7s %-6s %10lu %8s %8lu %7s %6lu\r\n",
+               in->name, per, (unsigned long)in->runs, avg,
+               (unsigned long)in->max_run_us, late, (unsigned long)in->resyncs);
+}
+
+/* tasks | tasks reset */
+static status_t cmd_tasks(int argc, char *argv[])
+{
+  if (argc == 2)
+  {
+    if (strcmp(argv[1], "reset") != 0)
+    {
+      return STATUS_ERR_PARAM;
+    }
+    sched_reset_stats();
+    shell_printf("task statistics reset\r\n");
+    return STATUS_OK;
+  }
+  if (argc != 1)
+  {
+    return STATUS_ERR_PARAM;
+  }
+
+  shell_printf("task    period       runs   avg_us   max_us late_ms resync\r\n");
+  for (size_t i = 0u; i < sched_count(); i++)
+  {
+    sched_info_t in;
+    if (sched_get_info(i, &in) != STATUS_OK)
+    {
+      break;
+    }
+    print_task_row(&in);
+  }
+  return STATUS_OK;
+}
+
 /* const: the table stays in Flash. It must come after all handlers.
  * To add a command: write a handler above and add one row here. */
 static const ShellCmd s_cmds[] = {
@@ -1041,6 +1097,7 @@ static const ShellCmd s_cmds[] = {
     {"flash", "flash <subcommand>", "flash tools, run 'flash'", cmd_flash}, // info|read|erase|write
     {"log", "log <subcommand>", "save sensor data to flash, run 'log'", cmd_log},
     {"perf", "perf [reset]", "loop timing statistics", cmd_perf},
+    {"tasks", "tasks [reset]", "scheduler statistics", cmd_tasks},
 };
 
 status_t app_cmds_init(const Led *led)

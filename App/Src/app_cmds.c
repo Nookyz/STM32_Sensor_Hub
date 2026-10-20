@@ -237,7 +237,7 @@ static bool refuse_if_scanning(void)
   if (!s_scan.active)
   {
     return false;
-  }s
+  }
   shell_printf("flash scan is running, 'flash scan stop' cancels it\r\n");
   return true;
 }

@@ -38,11 +38,11 @@ What the baseline shows:
 
 | Metric | Value |
 |---|---|
-| Sector erase (4 KB) | 93 - 101 ms |
-| Page programming, 600 bytes over 4 pages | 7 ms |
-| Read-back verify, 600 bytes | 17 ms |
+| Sector erase (4 KB) | 93 - 101 ms, set by the chip, not by the clock |
+| Page programming, 600 bytes over 4 pages | 7 ms at 16 MHz (SPI 1 MHz), 2 ms at 84 MHz (SPI 5.25 MHz) |
+| Read-back verify, 600 bytes | 17 ms at 16 MHz, 3 ms at 84 MHz |
+| Chip erase | 52 s measured (datasheet: 40 s typical, 200 s maximum) |
 | Log record size | 32 bytes, 128 records per sector, 2048 records in total |
-| Log clear, one sector | 101 ms |
 
 ## After stages 5a - 5c: UART TX DMA, UART RX DMA, scheduler
 
@@ -73,6 +73,8 @@ Notes:
 
 | Metric | Before (5c) | After |
 |---|---|---|
-| Longest task during `flash erase <sector>` | 96.4 ms | - |
-| Other tasks late during `flash erase <sector>` | 95 - 96 ms | - |
-| Chip erase duration | - | - |
+| Longest task during `flash erase <sector>` | 96.4 ms (the command waited for the chip) | 0.34 ms (`shell`, it only starts the erase) |
+| Other tasks late during a sector erase | 95 - 96 ms | at most 1 ms |
+| Erase poll task (`erase`, every 5 ms) | - | 1.0 us average, 60 us maximum |
+| Chip erase | - | 52 s in the background, `flash info` answered at 21 s |
+| `log clear` of one sector | blocked the loop for about 100 ms | background, 96 ms until it is done |
